@@ -157,16 +157,14 @@
         @group(0) @binding(2) var<storage, read_write> C: array<f32>;
 
         @compute @workgroup_size(64)
-        fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
-              @builtin(local_invocation_id) local_id: vec3<u32>,
-              @builtin(workgroup_id) workgroup_id: vec3<u32>) {
-          let localIndex = local_id.x;
+        fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+          let i = global_id.x % ${LOOPS};
           var sum: f32 = 0.0;
           for (var k = 0u; k < ${N}; k+=${STRIDE * 4}) {
-            sum += A[localIndex + k];
-            sum += A[localIndex + k + ${STRIDE}];
-            sum += A[localIndex + k + ${STRIDE*2}];
-            sum += A[localIndex + k + ${STRIDE*3}];
+            sum += A[i + k];
+            sum += A[i + k + ${STRIDE}];
+            sum += A[i + k + ${STRIDE*2}];
+            sum += A[i + k + ${STRIDE*3}];
           }
           C[global_id.x] = sum;
         }
