@@ -151,32 +151,24 @@
     async function coalescedMemread({adapter, device}) {
       const N = 1024 * 1024 * 32
       const LOOPS = 512
+      const STRIDE = N / LOOPS
       const shaderCode = `
         @group(0) @binding(1) var<storage, read_write> A: array<f32>;
         @group(0) @binding(2) var<storage, read_write> C: array<f32>;
 
         @compute @workgroup_size(64)
-        fn main(@builtin(global_invocation_id) GlobalId: vec3<u32>) {
-          let i = GlobalId.x * ${LOOPS};
+        fn main(@builtin(global_invocation_id) global_id: vec3<u32>,
+              @builtin(local_invocation_id) local_id: vec3<u32>,
+              @builtin(workgroup_id) workgroup_id: vec3<u32>) {
+          let localIndex = local_id.x;
           var sum: f32 = 0.0;
-          for (var k = 0u; k < ${LOOPS}; k+=16) {
-            sum += A[i + k];
-            sum += A[i + k + 1];
-            sum += A[i + k + 2];
-            sum += A[i + k + 3];
-            sum += A[i + k + 5];
-            sum += A[i + k + 6];
-            sum += A[i + k + 7];
-            sum += A[i + k + 8];
-            sum += A[i + k + 9];
-            sum += A[i + k + 10];
-            sum += A[i + k + 11];
-            sum += A[i + k + 12];
-            sum += A[i + k + 13];
-            sum += A[i + k + 14];
-            sum += A[i + k + 15];
+          for (var k = 0u; k < ${N}; k+=${STRIDE * 4}) {
+            sum += A[localIndex + k];
+            sum += A[localIndex + k + ${STRIDE}];
+            sum += A[localIndex + k + ${STRIDE*2}];
+            sum += A[localIndex + k + ${STRIDE*3}];
           }
-          C[GlobalId.x] = sum;
+          C[global_id.x] = sum;
         }
       `;
       const createMatrix = () => new Float32Array(N).fill(1)
@@ -211,7 +203,7 @@
           stagingBuffer.unmap();
           const elapsedSec = (performance.now() - start) / 1000;
           const gbytes = (N * 4) / (elapsedSec * 1e9);
-          if (i >= 5) {
+          if (i >= 10) {
             output.textContent += '.'
             memreadRes.push(gbytes)
           }
@@ -233,7 +225,7 @@
           let i = GlobalId.x * ${LOOPS};
           var sum: f32 = 0.0;
           for (var k = 0u; k < ${LOOPS}; k+=2) {
-            sum += A[((i + k) * 1731) % ${N}] + A[((i + k + 1) * 1731) % ${N}];
+            sum += A[((i + k) * 14731) % ${N}] + A[((i + k + 1) * 14731) % ${N}];
           }
           C[GlobalId.x] = sum;
         }
