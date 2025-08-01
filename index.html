@@ -131,11 +131,12 @@
           pass.end();
           encoder.copyBufferToBuffer(cBuffer, 0, stagingBuffer, 0, N * 4);
           const compEncoder = encoder.finish()
-
-          const start = performance.now();
-          device.queue.submit([compEncoder]);
-          await stagingBuffer.mapAsync(GPUMapMode.READ, 0, N * 4);
-          stagingBuffer.unmap();
+          
+          // next event loop
+          await new Promise(res => setTimeout(res, 0))
+          const start = performance.now()
+          device.queue.submit([compEncoder])
+          await device.queue.onSubmittedWorkDone()
           const elapsedSec = (performance.now() - start) / 1000;
           const gflops = flops / (elapsedSec * 1e9);
           if (i >= 2) {
@@ -185,7 +186,7 @@
       });
 
       const memreadRes = []
-      for (let i = 0; i < 20; i++) {
+      for (let i = 0; i < 12; i++) {
           const encoder = device.createCommandEncoder();
           const pass = encoder.beginComputePass();
           pass.setPipeline(pipeline);
@@ -195,14 +196,15 @@
           encoder.copyBufferToBuffer(cBuffer, 0, stagingBuffer, 0, N * 4 / LOOPS);
           const compEncoder = encoder.finish()
 
-          const start = performance.now();
-          device.queue.submit([compEncoder]);
-          await stagingBuffer.mapAsync(GPUMapMode.READ, 0, N * 4 / LOOPS);
-          stagingBuffer.unmap();
-          const elapsedSec = (performance.now() - start) / 1000;
+          // next event loop
+          await new Promise(res => setTimeout(res, 0))
+          const start = performance.now()
+          device.queue.submit([compEncoder])
+          await device.queue.onSubmittedWorkDone()
+          const elapsedSec = (performance.now() - start) / 1000
           const gbytes = (N * 4) / (elapsedSec * 1e9);
-          if (i >= 10) {
-            output.textContent += '.'
+          output.textContent += '.'
+          if (i >= 5) {
             memreadRes.push(gbytes)
           }
       }
@@ -244,7 +246,7 @@
       });
 
       const memreadRes = []
-      for (let i = 0; i < 20; i++) {
+      for (let i = 0; i < 12; i++) {
           const encoder = device.createCommandEncoder();
           const pass = encoder.beginComputePass();
           pass.setPipeline(pipeline);
@@ -254,14 +256,15 @@
           encoder.copyBufferToBuffer(cBuffer, 0, stagingBuffer, 0, N * 4 / LOOPS);
           const compEncoder = encoder.finish()
 
-          const start = performance.now();
-          device.queue.submit([compEncoder]);
-          await stagingBuffer.mapAsync(GPUMapMode.READ, 0, N * 4 / LOOPS);
-          stagingBuffer.unmap();
+          // next event loop
+          await new Promise(res => setTimeout(res, 0))
+          const start = performance.now()
+          device.queue.submit([compEncoder])
+          await device.queue.onSubmittedWorkDone()
           const elapsedSec = (performance.now() - start) / 1000;
           const gbytes = (N * 4) / (elapsedSec * 1e9);
+          output.textContent += '.'
           if (i >= 5) {
-            output.textContent += '.'
             memreadRes.push(gbytes)
           }
       }
