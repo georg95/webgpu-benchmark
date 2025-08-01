@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebGPU Benchmark</title>
+</head>
+    <style>
+    html, body {
+        width: 100%;
+        background-color: #222;
+        font-size: 15px;
+        font-family: 'Courier New', Courier, monospace;
+        padding: 0;
+        margin: 0;
+        color: bisque;
+        box-sizing: border-box;
+    }
+    body {
+      padding: 20px;
+    }
+    </style>
+<body>
+  <h1>WebGPU Benchmark</h1>
+  <pre id="output"></pre>
+  <script type="module">
+    const output = document.getElementById("output");
+    benchmark()
+
+    async function benchmark() {
+      let gflops_stat = []
+
+      output.textContent += `Raw GFLOPS`;
+      for (let N = 1; N < 64; N *= 2) {
+        const start = Date.now()
+        gflops_stat = await runGFLOPsBenchmark(2048 * 4 * N, 2048 * 4 * N);
+        if (Date.now() - start > 1000) {
+          break
+        }
+      }
+      const avg = gflops_stat.reduce((a, b) => a + b) / gflops_stat.length;
+      const std = Math.sqrt(gflops_stat.reduce((a, b) => a + (b - avg) ** 2, 0) / gflops_stat.length);
+      output.textContent += `\n${avg-std|0}-${avg+std|0} GFLOPS\n`;
+      output.textContent += `Coalesced memory read`;
+      const memread_stat = await coalescedMemread()
+      const memread_avg = memread_stat.reduce((a, b) => a + b) / memread_stat.length;
+      const memread_std = Math.sqrt(memread_stat.reduce((a, b) => a + (b - memread_avg) ** 2, 0) / memread_stat.length);
+      output.textContent += `\n${(memread_avg - memread_std).toFixed(1)}-${(memread_avg + memread_std).toFixed(1)} GB/s\n`;
+      output.textContent += `Random memory read`;
+      const memread2_stat = await randomMemread()
+      const memread2_avg = memread2_stat.reduce((a, b) => a + b) / memread2_stat.length;
+      const memread2_std = Math.sqrt(memread2_stat.reduce((a, b) => a + (b - memread2_avg) ** 2, 0) / memread2_stat.length);
+      output.textContent += `\n${(memread2_avg - memread2_std).toFixed(1)}-${(memread2_avg + memread2_std).toFixed(1)} GB/s\n`;
+    }
+
+    async function runGFLOPsBenchmark(N, LOOPS) {
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice();
+      const A_GROUP = 1024
+      const B_GROUP = N / 1024
+      const shaderCode = `
+        @group(0) @binding(2) var<storage, read_write> C: array<f32>;
+
+        @compute @workgroup_size(16, 16)
+        fn main(@builtin(global_invocation_id) GlobalId: vec3<u32>) {
+          let i = GlobalId.y*${B_GROUP} + GlobalId.x;
+          var sum: f32 = f32(i);
+          for (var k = 0u; k < ${LOOPS}; k++) {
+            let p = f32(k);
+            sum = (sum * ${Math.random()} + p * ${Math.random()}) * (${Math.random()} + p * ${Math.random()});
+            sum = (sum * ${Math.random()} + p * ${Math.random()}) * (${Math.random()} + p * ${Math.random()});
+            sum = (sum * ${Math.random()} + p * ${Math.random()}) * (${Math.random()} + p * ${Math.random()});
+            sum = (sum * ${Math.random()} + p * ${Math.random()}) * (${Math.random()} + p * ${Math.random()});
+            sum = (sum * ${Math.random()} + p * ${Math.random()}) * (${Math.random()} + p * ${Math.random()});
+          }
+          C[i] = sum;
+        }
+      `;
+
+      const module = device.createShaderModule({ code: shaderCode });
+      const pipeline = device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "main" }})
+      const cBuffer = device.createBuffer({ size: N * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+      const stagingBuffer = device.createBuffer({ size: N * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+      const bindGroup = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [{ binding: 2, resource: { buffer: cBuffer } }],
+      });
+
+      const LOOP_OPS = 30
+      const flops = LOOP_OPS * LOOPS * N;
+      const gflopsRes = []
+      for (let i = 0; i < 6; i++) {
+          const encoder = device.createCommandEncoder();
+          const pass = encoder.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(Math.ceil(A_GROUP / 16), Math.ceil(B_GROUP / 16));
+          pass.end();
+          encoder.copyBufferToBuffer(cBuffer, 0, stagingBuffer, 0, N * 4);
+          const compEncoder = encoder.finish()
+
+          const start = performance.now();
+          device.queue.submit([compEncoder]);
+          await stagingBuffer.mapAsync(GPUMapMode.READ, 0, N * 4);
+          stagingBuffer.unmap();
+          const elapsedSec = (performance.now() - start) / 1000;
+          const gflops = flops / (elapsedSec * 1e9);
+          if (i >= 2) {
+            output.textContent += '.'
+            gflopsRes.push(gflops)
+          }
+      }
+      cBuffer.destroy()
+      stagingBuffer.destroy()
+      return gflopsRes
+    }
+
+    async function coalescedMemread() {
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice();
+      const N = 1024 * 1024 * 32
+      const LOOPS = 512
+      const shaderCode = `
+        @group(0) @binding(1) var<storage, read_write> A: array<f32>;
+        @group(0) @binding(2) var<storage, read_write> C: array<f32>;
+
+        @compute @workgroup_size(64)
+        fn main(@builtin(global_invocation_id) GlobalId: vec3<u32>) {
+          let i = GlobalId.x * ${LOOPS};
+          var sum: f32 = 0.0;
+          for (var k = 0u; k < ${LOOPS}; k+=16) {
+            sum += A[i + k];
+            sum += A[i + k + 1];
+            sum += A[i + k + 2];
+            sum += A[i + k + 3];
+            sum += A[i + k + 5];
+            sum += A[i + k + 6];
+            sum += A[i + k + 7];
+            sum += A[i + k + 8];
+            sum += A[i + k + 9];
+            sum += A[i + k + 10];
+            sum += A[i + k + 11];
+            sum += A[i + k + 12];
+            sum += A[i + k + 13];
+            sum += A[i + k + 14];
+            sum += A[i + k + 15];
+          }
+          C[GlobalId.x] = sum;
+        }
+      `;
+      const createMatrix = () => new Float32Array(N).fill(1)
+      const module = device.createShaderModule({ code: shaderCode });
+      const pipeline = device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "main" }})
+      const cBuffer = device.createBuffer({ size: N * 4 / LOOPS, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+      const aBuffer = device.createBuffer({ size: N * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
+      new Float32Array(aBuffer.getMappedRange()).set(createMatrix());
+      aBuffer.unmap();
+      const stagingBuffer = device.createBuffer({ size: N * 4 / LOOPS, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+      const bindGroup = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 1, resource: { buffer: aBuffer } },
+          { binding: 2, resource: { buffer: cBuffer } }],
+      });
+
+      const memreadRes = []
+      for (let i = 0; i < 20; i++) {
+          const encoder = device.createCommandEncoder();
+          const pass = encoder.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(Math.ceil(N / LOOPS / 64));
+          pass.end();
+          encoder.copyBufferToBuffer(cBuffer, 0, stagingBuffer, 0, N * 4 / LOOPS);
+          const compEncoder = encoder.finish()
+
+          const start = performance.now();
+          device.queue.submit([compEncoder]);
+          await stagingBuffer.mapAsync(GPUMapMode.READ, 0, N * 4 / LOOPS);
+          stagingBuffer.unmap();
+          const elapsedSec = (performance.now() - start) / 1000;
+          const gbytes = (N * 4) / (elapsedSec * 1e9);
+          if (i >= 5) {
+            output.textContent += '.'
+            memreadRes.push(gbytes)
+          }
+      }
+      cBuffer.destroy()
+      aBuffer.destroy()
+      stagingBuffer.destroy()
+      return memreadRes
+    }
+    async function randomMemread() {
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice();
+      const N = 1024 * 1024 * 4
+      const LOOPS = 512
+      const shaderCode = `
+        @group(0) @binding(1) var<storage, read_write> A: array<f32>;
+        @group(0) @binding(2) var<storage, read_write> C: array<f32>;
+
+        @compute @workgroup_size(64)
+        fn main(@builtin(global_invocation_id) GlobalId: vec3<u32>) {
+          let i = GlobalId.x * ${LOOPS};
+          var sum: f32 = 0.0;
+          for (var k = 0u; k < ${LOOPS}; k+=2) {
+            sum += A[((i + k) * 1731) % ${N}] + A[((i + k + 1) * 1731) % ${N}];
+          }
+          C[GlobalId.x] = sum;
+        }
+      `;
+      const createMatrix = () => new Float32Array(N).fill(1)
+      const module = device.createShaderModule({ code: shaderCode });
+      const pipeline = device.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "main" }})
+      const cBuffer = device.createBuffer({ size: N * 4 / LOOPS, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+      const aBuffer = device.createBuffer({ size: N * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST, mappedAtCreation: true });
+      new Float32Array(aBuffer.getMappedRange()).set(createMatrix());
+      aBuffer.unmap();
+      const stagingBuffer = device.createBuffer({ size: N * 4 / LOOPS, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+      const bindGroup = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 1, resource: { buffer: aBuffer } },
+          { binding: 2, resource: { buffer: cBuffer } }],
+      });
+
+      const memreadRes = []
+      for (let i = 0; i < 20; i++) {
+          const encoder = device.createCommandEncoder();
+          const pass = encoder.beginComputePass();
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.dispatchWorkgroups(Math.ceil(N / LOOPS / 64));
+          pass.end();
+          encoder.copyBufferToBuffer(cBuffer, 0, stagingBuffer, 0, N * 4 / LOOPS);
+          const compEncoder = encoder.finish()
+
+          const start = performance.now();
+          device.queue.submit([compEncoder]);
+          await stagingBuffer.mapAsync(GPUMapMode.READ, 0, N * 4 / LOOPS);
+          stagingBuffer.unmap();
+          const elapsedSec = (performance.now() - start) / 1000;
+          const gbytes = (N * 4) / (elapsedSec * 1e9);
+          if (i >= 5) {
+            output.textContent += '.'
+            memreadRes.push(gbytes)
+          }
+      }
+      cBuffer.destroy()
+      aBuffer.destroy()
+      stagingBuffer.destroy()
+      return memreadRes
+    }
+  </script>
+</body>
+</html>
