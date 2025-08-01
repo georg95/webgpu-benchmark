@@ -25,15 +25,26 @@
   <pre id="output"></pre>
   <script type="module">
     const output = document.getElementById("output");
-    benchmark()
+    async function benchmarkAllGpus(params) {
+      const adapter1 = await navigator.gpu.requestAdapter({ powerPreference: "low-power" })
+      const device1 = await adapter1.requestDevice()
+      const adapter2 = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" })
+      const device2 = await adapter2.requestDevice()
+      await benchmark({ device: device1, adapter: adapter1 })
+      if (adapter1.info.device !== adapter2.info.device || adapter1.info.description !== adapter2.info.description) {
+        output.textContent += '\n'
+        await benchmark({ device: device2, adapter: adapter2 })
+      }
+    }
+    benchmarkAllGpus()
 
-    async function benchmark() {
+    async function benchmark(gpu) {
       let gflops_stat = []
-
+      output.textContent += `===== ${gpu.adapter.info.description || gpu.adapter.info.vendor}\n`
       output.textContent += `Raw GFLOPS`;
       for (let N = 1; N < 64; N *= 2) {
         const start = Date.now()
-        gflops_stat = await runGFLOPsBenchmark(2048 * 4 * N, 2048 * 4 * N);
+        gflops_stat = await runGFLOPsBenchmark(gpu, 2048 * 4 * N, 2048 * 4 * N);
         if (Date.now() - start > 1000) {
           break
         }
@@ -42,20 +53,18 @@
       const std = Math.sqrt(gflops_stat.reduce((a, b) => a + (b - avg) ** 2, 0) / gflops_stat.length);
       output.textContent += `\n${avg-std|0}-${avg+std|0} GFLOPS\n`;
       output.textContent += `Coalesced memory read`;
-      const memread_stat = await coalescedMemread()
+      const memread_stat = await coalescedMemread(gpu)
       const memread_avg = memread_stat.reduce((a, b) => a + b) / memread_stat.length;
       const memread_std = Math.sqrt(memread_stat.reduce((a, b) => a + (b - memread_avg) ** 2, 0) / memread_stat.length);
       output.textContent += `\n${(memread_avg - memread_std).toFixed(1)}-${(memread_avg + memread_std).toFixed(1)} GB/s\n`;
       output.textContent += `Random memory read`;
-      const memread2_stat = await randomMemread()
+      const memread2_stat = await randomMemread(gpu)
       const memread2_avg = memread2_stat.reduce((a, b) => a + b) / memread2_stat.length;
       const memread2_std = Math.sqrt(memread2_stat.reduce((a, b) => a + (b - memread2_avg) ** 2, 0) / memread2_stat.length);
       output.textContent += `\n${(memread2_avg - memread2_std).toFixed(1)}-${(memread2_avg + memread2_std).toFixed(1)} GB/s\n`;
     }
 
-    async function runGFLOPsBenchmark(N, LOOPS) {
-      const adapter = await navigator.gpu.requestAdapter();
-      const device = await adapter.requestDevice();
+    async function runGFLOPsBenchmark({adapter, device}, N, LOOPS) {
       const A_GROUP = 1024
       const B_GROUP = N / 1024
       const shaderCode = `
@@ -115,9 +124,7 @@
       return gflopsRes
     }
 
-    async function coalescedMemread() {
-      const adapter = await navigator.gpu.requestAdapter();
-      const device = await adapter.requestDevice();
+    async function coalescedMemread({adapter, device}) {
       const N = 1024 * 1024 * 32
       const LOOPS = 512
       const shaderCode = `
@@ -190,9 +197,7 @@
       stagingBuffer.destroy()
       return memreadRes
     }
-    async function randomMemread() {
-      const adapter = await navigator.gpu.requestAdapter();
-      const device = await adapter.requestDevice();
+    async function randomMemread({adapter, device}) {
       const N = 1024 * 1024 * 4
       const LOOPS = 512
       const shaderCode = `
