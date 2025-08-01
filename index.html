@@ -71,19 +71,21 @@
           break
         }
       }
-      const avg = gflops_stat.reduce((a, b) => a + b) / gflops_stat.length;
-      const std = Math.sqrt(gflops_stat.reduce((a, b) => a + (b - avg) ** 2, 0) / gflops_stat.length);
-      output.textContent += `\n${avg-std|0}-${avg+std|0} GFLOPS\n`;
-      output.textContent += `Coalesced memory read`;
+      const gflops_avg = gflops_stat.reduce((a, b) => a + b) / gflops_stat.length;
+      const gflops_std = Math.sqrt(gflops_stat.reduce((a, b) => a + (b - gflops_avg) ** 2, 0) / gflops_stat.length);
+      output.textContent += `\n${gflops_avg-gflops_std|0}-${gflops_avg+gflops_std|0} GFLOPS\n`;
+      output.textContent += `\nCoalesced memory read`;
       const memread_stat = await coalescedMemread(gpu)
       const memread_avg = memread_stat.reduce((a, b) => a + b) / memread_stat.length;
       const memread_std = Math.sqrt(memread_stat.reduce((a, b) => a + (b - memread_avg) ** 2, 0) / memread_stat.length);
-      output.textContent += `\n${(memread_avg - memread_std).toFixed(1)}-${(memread_avg + memread_std).toFixed(1)} GB/s\n`;
-      output.textContent += `Random memory read`;
+      output.textContent += `\n${(memread_avg - memread_std).toFixed(1)}-${(memread_avg + memread_std).toFixed(1)} GB/s`;
+      output.textContent += `\n${gflops_avg / memread_avg * 4 | 0} FLOPs per 4-byte value\n`;
+      output.textContent += `\nRandom memory read`;
       const memread2_stat = await randomMemread(gpu)
       const memread2_avg = memread2_stat.reduce((a, b) => a + b) / memread2_stat.length;
       const memread2_std = Math.sqrt(memread2_stat.reduce((a, b) => a + (b - memread2_avg) ** 2, 0) / memread2_stat.length);
-      output.textContent += `\n${(memread2_avg - memread2_std).toFixed(1)}-${(memread2_avg + memread2_std).toFixed(1)} GB/s\n`;
+      output.textContent += `\n${(memread2_avg - memread2_std).toFixed(1)}-${(memread2_avg + memread2_std).toFixed(1)} GB/s`;
+      output.textContent += `\n${gflops_avg / memread2_avg * 4 | 0} FLOPs per 4-byte value\n`;
     }
 
     async function runGFLOPsBenchmark({adapter, device}, N, LOOPS) {
